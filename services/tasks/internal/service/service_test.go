@@ -73,6 +73,16 @@ func (s *taskCacheStub) Delete(ctx context.Context, key string) error {
 
 func (s *taskCacheStub) Close() error { return nil }
 
+type eventPublisherStub struct {
+	published []TaskEvent
+	err       error
+}
+
+func (s *eventPublisherStub) Publish(ctx context.Context, event TaskEvent) error {
+	s.published = append(s.published, event)
+	return s.err
+}
+
 func TestCreateSanitizesInput(t *testing.T) {
 	now := time.Date(2026, 4, 2, 12, 0, 0, 0, time.UTC)
 
@@ -127,6 +137,55 @@ func TestCreateSanitizesInput(t *testing.T) {
 	}
 	if task.DueDate != "2026-05-01" {
 		t.Fatalf("unexpected due date in dto: %q", task.DueDate)
+	}
+}
+
+func TestCreatePublishesTaskCreatedEvent(t *testing.T) {
+	now := time.Date(2026, 4, 2, 12, 0, 0, 0, time.UTC)
+	repo := &taskRepoStub{
+		createFn: func(ctx context.Context, params repository.CreateTaskParams) (repository.Task, error) {
+			return repository.Task{
+				ID:          "task-1",
+				Title:       params.Title,
+				Description: params.Description,
+				Done:        false,
+				CreatedAt:   now,
+			}, nil
+		},
+		listFn: func(ctx context.Context) ([]repository.Task, error) { return nil, nil },
+		getFn:  func(ctx context.Context, id string) (repository.Task, error) { return repository.Task{}, nil },
+		searchByTitleFn: func(ctx context.Context, title string) ([]repository.Task, error) {
+			return nil, nil
+		},
+		updateFn: func(ctx context.Context, id string, params repository.UpdateTaskParams) (repository.Task, error) {
+			return repository.Task{}, nil
+		},
+		deleteFn: func(ctx context.Context, id string) error { return nil },
+	}
+	publisher := &eventPublisherStub{}
+
+	svc := New(repo, &taskCacheStub{}, zap.NewNop(), publisher)
+
+	_, err := svc.Create(context.Background(), CreateTaskInput{
+		Title:       "Rabbit",
+		Description: "publish event",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(publisher.published) != 1 {
+		t.Fatalf("expected one event, got %d", len(publisher.published))
+	}
+
+	event := publisher.published[0]
+	if event.Type != "task.created" {
+		t.Fatalf("unexpected event type: %q", event.Type)
+	}
+	if event.TaskID != "task-1" || event.Title != "Rabbit" {
+		t.Fatalf("unexpected event: %#v", event)
+	}
+	if event.CreatedAt != now.Format(time.RFC3339) {
+		t.Fatalf("unexpected created_at: %q", event.CreatedAt)
 	}
 }
 

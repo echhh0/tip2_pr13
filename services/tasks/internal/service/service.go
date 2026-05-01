@@ -39,13 +39,25 @@ type UpdateTaskInput struct {
 	Done        *bool   `json:"done,omitempty"`
 }
 
-type TaskService struct {
-	repo   repository.TaskRepository
-	cache  cache.TaskCache
-	logger *zap.Logger
+type TaskEvent struct {
+	Type      string `json:"type"`
+	TaskID    string `json:"task_id"`
+	Title     string `json:"title"`
+	CreatedAt string `json:"created_at"`
 }
 
-func New(repo repository.TaskRepository, taskCache cache.TaskCache, logger *zap.Logger) *TaskService {
+type EventPublisher interface {
+	Publish(ctx context.Context, event TaskEvent) error
+}
+
+type TaskService struct {
+	repo      repository.TaskRepository
+	cache     cache.TaskCache
+	publisher EventPublisher
+	logger    *zap.Logger
+}
+
+func New(repo repository.TaskRepository, taskCache cache.TaskCache, logger *zap.Logger, publishers ...EventPublisher) *TaskService {
 	if taskCache == nil {
 		taskCache = cache.NewNoop()
 	}
@@ -53,10 +65,16 @@ func New(repo repository.TaskRepository, taskCache cache.TaskCache, logger *zap.
 		logger = zap.NewNop()
 	}
 
+	var publisher EventPublisher
+	if len(publishers) > 0 {
+		publisher = publishers[0]
+	}
+
 	return &TaskService{
-		repo:   repo,
-		cache:  taskCache,
-		logger: logger,
+		repo:      repo,
+		cache:     taskCache,
+		publisher: publisher,
+		logger:    logger,
 	}
 }
 
@@ -80,7 +98,10 @@ func (s *TaskService) Create(ctx context.Context, input CreateTaskInput) (Task, 
 		return Task{}, err
 	}
 
-	return toTaskDTO(task), nil
+	dto := toTaskDTO(task)
+	s.publishTaskCreated(ctx, dto)
+
+	return dto, nil
 }
 
 func (s *TaskService) List(ctx context.Context) ([]Task, error) {
@@ -228,6 +249,26 @@ func (s *TaskService) Delete(ctx context.Context, id string) error {
 	}
 
 	return nil
+}
+
+func (s *TaskService) publishTaskCreated(ctx context.Context, task Task) {
+	if s.publisher == nil {
+		return
+	}
+
+	err := s.publisher.Publish(ctx, TaskEvent{
+		Type:      "task.created",
+		TaskID:    task.ID,
+		Title:     task.Title,
+		CreatedAt: task.CreatedAt,
+	})
+	if err != nil {
+		s.logger.Warn("publish task event failed",
+			zap.String("component", "events"),
+			zap.String("task_id", task.ID),
+			zap.Error(err),
+		)
+	}
 }
 
 func parseOptionalDate(value string) (*time.Time, error) {

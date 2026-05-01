@@ -10,6 +10,7 @@ import (
 
 	"tip2_pr12/services/tasks/internal/cache"
 	"tip2_pr12/services/tasks/internal/client/authclient"
+	"tip2_pr12/services/tasks/internal/events"
 	httpapi "tip2_pr12/services/tasks/internal/http"
 	"tip2_pr12/services/tasks/internal/service"
 	"tip2_pr12/services/tasks/internal/storage/postgres"
@@ -42,7 +43,10 @@ func main() {
 	taskCache := newTaskCache(logger)
 	defer func() { _ = taskCache.Close() }()
 
-	taskService := service.New(taskRepo, taskCache, logger)
+	eventPublisher := newEventPublisher(logger)
+	defer func() { _ = eventPublisher.Close() }()
+
+	taskService := service.New(taskRepo, taskCache, logger, eventPublisher)
 
 	authClient, err := authclient.New(authGRPCAddr, logger)
 	if err != nil {
@@ -83,6 +87,41 @@ func main() {
 		logger.Fatal("tasks service failed", zap.Error(err), zap.String("component", "http_server"))
 	}
 }
+
+type closeablePublisher interface {
+	service.EventPublisher
+	Close() error
+}
+
+func newEventPublisher(logger *zap.Logger) closeablePublisher {
+	rabbitURL := strings.TrimSpace(getEnv("RABBIT_URL", ""))
+	if rabbitURL == "" {
+		logger.Warn("rabbitmq publisher disabled: RABBIT_URL is empty", zap.String("component", "events"))
+		return noopEventPublisher{}
+	}
+
+	queueName := getEnv("QUEUE_NAME", "task_events")
+	publisher, err := events.NewRabbitPublisher(rabbitURL, queueName)
+	if err != nil {
+		logger.Warn("rabbitmq publisher unavailable",
+			zap.String("component", "events"),
+			zap.String("queue", queueName),
+			zap.Error(err),
+		)
+		return noopEventPublisher{}
+	}
+
+	logger.Info("rabbitmq publisher enabled",
+		zap.String("component", "events"),
+		zap.String("queue", queueName),
+	)
+	return publisher
+}
+
+type noopEventPublisher struct{}
+
+func (noopEventPublisher) Publish(context.Context, service.TaskEvent) error { return nil }
+func (noopEventPublisher) Close() error                                     { return nil }
 
 func newTaskCache(logger *zap.Logger) cache.TaskCache {
 	addrs := splitCSV(getEnv("REDIS_ADDRS", "redis-cluster:7000,redis-cluster:7001,redis-cluster:7002,redis-cluster:7003,redis-cluster:7004,redis-cluster:7005"))
