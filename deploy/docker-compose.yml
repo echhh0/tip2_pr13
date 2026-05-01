@@ -47,6 +47,24 @@ services:
       retries: 20
     restart: unless-stopped
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: tip2_pr13_rabbitmq
+    env_file:
+      - .env
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS}"
+    ports:
+      - "${RABBITMQ_PORT}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT}:15672"
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   auth:
     image: "${AUTH_IMAGE_REPO}:${IMAGE_TAG}"
     build:
@@ -79,6 +97,8 @@ services:
         condition: service_started
       redis-cluster:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -92,6 +112,8 @@ services:
       CACHE_TTL_JITTER_SECONDS: "${CACHE_TTL_JITTER_SECONDS}"
       REDIS_OP_TIMEOUT_MS: "${REDIS_OP_TIMEOUT_MS}"
       REDIS_INIT_TIMEOUT_MS: "${REDIS_INIT_TIMEOUT_MS}"
+      RABBIT_URL: "${RABBIT_URL}"
+      QUEUE_NAME: "${QUEUE_NAME}"
       INSTANCE_ID: tasks-1
     expose:
       - "${TASKS_PORT}"
@@ -110,6 +132,8 @@ services:
         condition: service_started
       redis-cluster:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -123,9 +147,28 @@ services:
       CACHE_TTL_JITTER_SECONDS: "${CACHE_TTL_JITTER_SECONDS}"
       REDIS_OP_TIMEOUT_MS: "${REDIS_OP_TIMEOUT_MS}"
       REDIS_INIT_TIMEOUT_MS: "${REDIS_INIT_TIMEOUT_MS}"
+      RABBIT_URL: "${RABBIT_URL}"
+      QUEUE_NAME: "${QUEUE_NAME}"
       INSTANCE_ID: tasks-2
     expose:
       - "${TASKS_PORT}"
+    restart: unless-stopped
+
+  worker:
+    image: "${WORKER_IMAGE_REPO}:${IMAGE_TAG}"
+    build:
+      context: ..
+      dockerfile: services/worker/Dockerfile
+    container_name: tip2_pr13_worker
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      RABBIT_URL: "${RABBIT_URL}"
+      QUEUE_NAME: "${QUEUE_NAME}"
+      WORKER_PREFETCH: "${WORKER_PREFETCH}"
     restart: unless-stopped
 
   prometheus:
